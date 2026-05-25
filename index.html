@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>QRコードリーダー</title>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050816;
+      --panel: rgba(255,255,255,.09);
+      --border: rgba(255,255,255,.16);
+      --text: #f8fafc;
+      --sub: #cbd5e1;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body {
+      min-height: 100svh;
+      display: grid;
+      place-items: center;
+      padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+    }
+    .app {
+      width: min(720px, 100%);
+      height: min(920px, 100%);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 12px;
+    }
+    header, footer {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 14px 16px;
+      backdrop-filter: blur(10px);
+    }
+    h1 {
+      margin: 0 0 4px;
+      font-size: 20px;
+      letter-spacing: .04em;
+    }
+    p {
+      margin: 0;
+      color: var(--sub);
+      line-height: 1.45;
+      font-size: 14px;
+    }
+    .cameraWrap {
+      position: relative;
+      overflow: hidden;
+      border-radius: 24px;
+      border: 1px solid var(--border);
+      background: #000;
+      min-height: 0;
+    }
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      transform: translateZ(0);
+    }
+    canvas { display: none; }
+    .frame {
+      position: absolute;
+      inset: 50%;
+      width: min(66vw, 360px);
+      height: min(66vw, 360px);
+      transform: translate(-50%, -50%);
+      border: 4px solid rgba(255,255,255,.92);
+      border-radius: 28px;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,.34);
+      pointer-events: none;
+    }
+    .frame::before {
+      content: "";
+      position: absolute;
+      left: 20px;
+      right: 20px;
+      height: 3px;
+      background: rgba(34,197,94,.95);
+      box-shadow: 0 0 18px rgba(34,197,94,.9);
+      animation: scan 1.6s linear infinite;
+      border-radius: 999px;
+    }
+    @keyframes scan {
+      from { top: 18px; }
+      to { top: calc(100% - 20px); }
+    }
+    .status {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: calc(12px - 10mm);
+      padding: 12px 14px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: rgba(15,23,42,.82);
+      backdrop-filter: blur(12px);
+      font-weight: 700;
+      line-height: 1.4;
+      text-align: center;
+      word-break: break-word;
+    }
+    .status.ok { color: var(--ok); }
+    .status.warn { color: var(--warn); }
+    .status.danger { color: var(--danger); }
+    .fallback {
+      display: none;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .fallback.show { display: grid; }
+    textarea {
+      width: 100%;
+      min-height: 76px;
+      resize: none;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.08);
+      color: var(--text);
+      padding: 10px;
+      font-size: 16px;
+    }
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 14px;
+      padding: 13px 16px;
+      background: #2563eb;
+      color: white;
+      font-weight: 800;
+      font-size: 16px;
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .ghost { background: rgba(255,255,255,.14); }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>QRコードリーダー</h1>
+    </header>
+
+    <section class="cameraWrap" aria-label="カメラ">
+      <video id="video" autoplay muted playsinline></video>
+      <canvas id="canvas"></canvas>
+      <div class="frame" aria-hidden="true"></div>
+      <div id="status" class="status">カメラをきどうしています</div>
+    </section>
+
+    <footer>
+      <p id="resultText">ちょっと まってね</p>
+      <div id="fallback" class="fallback">
+        <textarea id="fallbackText" readonly></textarea>
+        <button id="copyBtn">コピーする</button>
+      </div>
+      <div class="actions">
+        <button id="restartBtn" class="ghost">もういちど</button>
+        <button id="stopBtn" class="ghost">とめる</button>
+      </div>
+    </footer>
+  </main>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const statusEl = document.getElementById('status');
+    const resultText = document.getElementById('resultText');
+    const fallback = document.getElementById('fallback');
+    const fallbackText = document.getElementById('fallbackText');
+    const copyBtn = document.getElementById('copyBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    const stopBtn = document.getElementById('stopBtn');
+
+    let stream = null;
+    let scanning = false;
+    let done = false;
+    let lastText = '';
+
+    function setStatus(message, type = '') {
+      statusEl.textContent = message;
+      statusEl.className = `status ${type}`.trim();
+    }
+
+    function isProbablyUrl(text) {
+      const value = text.trim();
+      if (/^https?:\/\//i.test(value)) return true;
+      if (/^www\.[^\s]+\.[^\s]+$/i.test(value)) return true;
+      return /^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?(\/[^\s]*)?$/i.test(value);
+    }
+
+    function normalizeUrl(text) {
+      const value = text.trim();
+      if (/^https?:\/\//i.test(value)) return value;
+      return `https://${value}`;
+    }
+
+    async function copyText(text) {
+      lastText = text;
+      fallbackText.value = text;
+      try {
+        await navigator.clipboard.writeText(text);
+        fallback.classList.remove('show');
+        setStatus('コピーしました', 'ok');
+        resultText.textContent = text;
+      } catch (error) {
+        fallback.classList.add('show');
+        fallbackText.focus();
+        fallbackText.select();
+        setStatus('コピーに追加操作が必要です', 'warn');
+        resultText.textContent = 'iPad/Safariの制限で自動コピーできない場合があります。下の「コピーする」を押してください。';
+      }
+    }
+
+    async function handleQr(rawText) {
+      if (done) return;
+      done = true;
+      scanning = false;
+      const text = rawText.trim();
+      stopCamera();
+
+      if (!text) {
+        setStatus('空のQRコードでした', 'warn');
+        return;
+      }
+
+      if (isProbablyUrl(text)) {
+        const url = normalizeUrl(text);
+        setStatus('URLを開きます…', 'ok');
+        resultText.textContent = url;
+        location.href = url;
+        return;
+      }
+
+      await copyText(text);
+    }
+
+    function scanLoop() {
+      if (!scanning || done) return;
+
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        const width = video.videoWidth;
+        const height = video.videoHeight;
+        if (width && height) {
+          canvas.width = width;
+          canvas.height = height;
+          ctx.drawImage(video, 0, 0, width, height);
+          const imageData = ctx.getImageData(0, 0, width, height);
+          const code = jsQR(imageData.data, width, height, { inversionAttempts: 'dontInvert' });
+          if (code && code.data) {
+            handleQr(code.data);
+            return;
+          }
+        }
+      }
+
+      requestAnimationFrame(scanLoop);
+    }
+
+    async function startCamera() {
+      if (!window.isSecureContext) {
+        setStatus('HTTPSで開いてください', 'danger');
+        resultText.textContent = 'GitHub Pagesで公開したURLから開くと動きます。file:// や通常の http:// ではカメラが使えないことがあります。';
+        return;
+      }
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setStatus('このブラウザではカメラを使えません', 'danger');
+        resultText.textContent = 'iPadのSafari、Chrome、Edgeなどの最新版で試してください。';
+        return;
+      }
+
+      stopCamera();
+      done = false;
+      scanning = false;
+      fallback.classList.remove('show');
+      setStatus('カメラの許可を待っています…');
+      resultText.textContent = '読み取り待ちです。';
+
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
+        });
+        video.srcObject = stream;
+        await video.play();
+        scanning = true;
+        setStatus('QRコードを枠内に入れてください');
+        requestAnimationFrame(scanLoop);
+      } catch (error) {
+        setStatus('カメラを起動できませんでした', 'danger');
+        resultText.textContent = 'Safariのカメラ許可、HTTPS、別アプリのカメラ使用中でないかを確認してください。';
+      }
+    }
+
+    function stopCamera() {
+      scanning = false;
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }
+      video.srcObject = null;
+    }
+
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(lastText || fallbackText.value);
+        fallback.classList.remove('show');
+        setStatus('コピーしました', 'ok');
+        resultText.textContent = lastText || fallbackText.value;
+      } catch (error) {
+        fallbackText.focus();
+        fallbackText.select();
+        setStatus('コピーできませんでした。選択して手動コピーしてください。', 'danger');
+      }
+    });
+
+    restartBtn.addEventListener('click', startCamera);
+    stopBtn.addEventListener('click', () => {
+      stopCamera();
+      setStatus('停止しました');
+    });
+
+    window.addEventListener('pagehide', stopCamera);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) stopCamera();
+    });
+
+    startCamera();
+  </script>
+</body>
+</html>
